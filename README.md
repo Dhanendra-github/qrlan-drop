@@ -2,16 +2,26 @@
 
 **Current version: 1.5.0** · [Read the patch notes](CHANGELOG.md)
 
-<img width="722" height="642" alt="QRLAN Drop Windows app" src="https://github.com/user-attachments/assets/a73c917f-af5b-42fb-bfe6-c2b1a6425f61" />
+<img width="922" height="752" alt="QRLAN Drop v1.5 dark interface" src="https://github.com/user-attachments/assets/d2e6eedf-22b0-49cd-9ca9-596042ca03c9" />
 
 Send files between a Windows 11 computer and a phone by scanning a QR code.
 
 No account. No cloud upload. Both devices only need to be on the same Wi-Fi.
 
+## What is new in version 1.5
+
+- A modern dark design that matches Windows 11.
+- Smooth button, progress-bar, and status-light animations.
+- **Open Folder** opens the folder containing your file.
+- **Open File** opens the selected or newest received file.
+- No extra command window and no bright white title bar.
+- Choose your receive folder and watch progress for large files.
+- No artificial file-size limit.
+
 ## Easy download
 
 1. Open the [latest release](https://github.com/Dhanendra-github/qrlan-drop/releases/latest).
-2. Download **QRLAN Drop.exe**.
+2. Under **Assets**, download **QRLAN.Drop.exe**.
 3. Double-click the downloaded file.
 4. If Windows Firewall asks, allow **Private networks**.
 
@@ -29,6 +39,8 @@ You do not need to install Python.
 
 Keep the app open until the progress bar reaches 100%.
 
+Use **Open Folder** to see where the file is saved. Use **Open File** to open it immediately.
+
 ## Send a file from the phone
 
 1. Open **QRLAN Drop**.
@@ -41,6 +53,8 @@ Keep the app open until the progress bar reaches 100%.
 
 Keep the app open until the progress bar reaches 100%.
 
+Use **Open Folder** to see the received file. Use **Open File** to open the newest received file.
+
 ## Important
 
 - The computer and phone must be connected to the same Wi-Fi.
@@ -48,6 +62,13 @@ Keep the app open until the progress bar reaches 100%.
 - There is no artificial file-size limit. Free disk space and Wi-Fi stability are the practical limits.
 - Click **Stop transfer** when finished. This makes the QR link stop working.
 - Files stay on your local network. They are not uploaded to a cloud service.
+- The QR link only works while QRLAN Drop is open.
+
+## Version 1.5 downloads
+
+- [Download the Windows app](https://github.com/Dhanendra-github/qrlan-drop/releases/download/v1.5.0/QRLAN.Drop.exe)
+- [Download the source code](https://github.com/Dhanendra-github/qrlan-drop/releases/download/v1.5.0/QRLAN.Drop.Source.zip)
+- [Read all version 1.5 patch notes](CHANGELOG.md)
 
 ## Build it yourself
 

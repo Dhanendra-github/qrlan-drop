@@ -17,10 +17,11 @@ import tkinter as tk
 from tkinter import ttk
 
 import qrcode
-from PIL import ImageTk
+from PIL import Image, ImageTk
 
 
 APP_NAME = "QRLAN Drop"
+APP_VERSION = "1.5.0"
 CHUNK_SIZE = 64 * 1024
 
 
@@ -213,15 +214,23 @@ def json_string(value: str) -> str:
 def page(body: str) -> str:
     return f"""<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{APP_NAME}</title><style>
-:root {{ color-scheme: light dark; font-family: system-ui, sans-serif; }}
-body {{ margin:0; min-height:100vh; display:grid; place-items:center; background:#eef2ff; color:#15213b; }}
-main {{ width:min(86vw,420px); background:white; padding:32px; border-radius:24px; box-shadow:0 16px 50px #1e2a5a20; text-align:center; }}
-h1 {{ font-size:1.45rem; overflow-wrap:anywhere; margin:14px 0 8px; }} p {{ color:#5b6478; }}
-.button,button {{ display:block; width:100%; box-sizing:border-box; border:0; border-radius:12px; padding:14px; background:#3f5bea; color:white; font-weight:700; font-size:1rem; text-decoration:none; cursor:pointer; }}
-.badge {{ display:inline-block; padding:6px 10px; border-radius:99px; background:#e8edff; color:#334fd2; font-size:.8rem; font-weight:700; }}
-.picker {{ border:2px dashed #ccd4ef; border-radius:14px; padding:22px 12px; margin:22px 0 14px; }}
-input {{ max-width:100%; }} progress {{ width:100%; height:14px; margin-top:14px; accent-color:#3f5bea; }} .note {{ font-size:.82rem; }} #status {{ min-height:1.4em; font-weight:600; color:#334fd2; }}
-@media(prefers-color-scheme:dark) {{ body{{background:#111827;color:#f4f6ff}} main{{background:#1f2937}} p{{color:#bcc5d7}} }}
+:root {{ color-scheme:dark; font-family:Inter,"Segoe UI",system-ui,sans-serif; }}
+* {{ box-sizing:border-box; }}
+body {{ margin:0; min-height:100vh; display:grid; place-items:center; padding:24px; overflow-x:hidden; background:#080a12; color:#f7f5ff; }}
+body::before {{ content:""; position:fixed; inset:-30%; z-index:-2; background:radial-gradient(circle at 28% 34%,#6d4aff42 0,transparent 28%),radial-gradient(circle at 78% 70%,#24c9e82b 0,transparent 25%); animation:drift 10s ease-in-out infinite alternate; }}
+body::after {{ content:""; position:fixed; inset:0; z-index:-1; opacity:.22; background-image:linear-gradient(#ffffff08 1px,transparent 1px),linear-gradient(90deg,#ffffff08 1px,transparent 1px); background-size:32px 32px; mask-image:linear-gradient(to bottom,black,transparent); }}
+main {{ position:relative; width:min(90vw,440px); overflow:hidden; padding:34px; border:1px solid #ffffff14; border-radius:28px; background:linear-gradient(145deg,#171a29ee,#10121dee); box-shadow:0 28px 90px #0009,inset 0 1px #ffffff0d; text-align:center; backdrop-filter:blur(24px); }}
+main::before {{ content:""; position:absolute; inset:0 0 auto; height:2px; background:linear-gradient(90deg,transparent,#8468ff,#39d9ed,transparent); }}
+h1 {{ font-size:1.5rem; line-height:1.25; overflow-wrap:anywhere; margin:16px 0 8px; }} p {{ color:#a5abc2; line-height:1.55; }}
+.button,button {{ display:block; width:100%; border:0; border-radius:14px; padding:15px; background:linear-gradient(110deg,#7558ff,#9978ff); color:white; font-weight:750; font-size:1rem; text-decoration:none; cursor:pointer; box-shadow:0 10px 30px #694cff36; transition:transform .2s,filter .2s; }}
+.button:hover,button:hover {{ transform:translateY(-2px); filter:brightness(1.12); }} button:disabled {{ opacity:.55; cursor:default; transform:none; }}
+.badge {{ display:inline-flex; padding:7px 12px; border:1px solid #8a72ff44; border-radius:99px; background:#7960ff18; color:#b9aaff; font-size:.78rem; font-weight:750; letter-spacing:.04em; }}
+.picker {{ border:1px dashed #71669a; border-radius:17px; padding:25px 14px; margin:24px 0 15px; background:#ffffff05; transition:border-color .2s,background .2s; }} .picker:hover {{ border-color:#947cff; background:#8a6eff0c; }}
+input {{ max-width:100%; color:#cdd1e1; }} input::file-selector-button {{ margin-right:10px; border:0; border-radius:9px; padding:9px 12px; background:#292d42; color:#f5f3ff; cursor:pointer; }}
+progress {{ width:100%; height:10px; margin-top:18px; border:0; border-radius:99px; overflow:hidden; accent-color:#8064ff; }} progress::-webkit-progress-bar {{ background:#252839; }} progress::-webkit-progress-value {{ background:linear-gradient(90deg,#7659ff,#3dd9eb); }}
+.note {{ font-size:.82rem; }} #status {{ min-height:1.4em; font-weight:650; color:#baaaff; }}
+@keyframes drift {{ to {{ transform:translate3d(5%,-3%,0) rotate(5deg); }} }}
+@media(prefers-reduced-motion:reduce) {{ * {{ animation:none!important; transition:none!important; }} }}
 </style></head><body><main>{body}</main></body></html>"""
 
 
@@ -268,7 +277,7 @@ class TransferService:
         self.url = ""
 
 
-class QRLANApp(tk.Tk):
+class LegacyQRLANApp(tk.Tk):
     BG = "#f4f6fb"
     CARD = "#ffffff"
     INK = "#17213a"
@@ -284,6 +293,7 @@ class QRLANApp(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self.close)
         self.service = TransferService(self.notify)
         self.file_path: Path | None = None
+        self.last_received_path: Path | None = None
         self.receive_folder = Path.home() / "Downloads" / "QRLAN Drop"
         self.qr_photo = None
         self._styles()
@@ -440,14 +450,448 @@ class QRLANApp(tk.Tk):
         self.destroy()
 
 
+def _mix_color(first: str, second: str, amount: float) -> str:
+    """Blend two #RRGGBB colors for subtle UI motion."""
+    a = tuple(int(first[index:index + 2], 16) for index in (1, 3, 5))
+    b = tuple(int(second[index:index + 2], 16) for index in (1, 3, 5))
+    values = tuple(round(x + (y - x) * amount) for x, y in zip(a, b))
+    return "#" + "".join(f"{value:02x}" for value in values)
+
+
+def _rounded_rectangle(canvas: tk.Canvas, x1, y1, x2, y2, radius, **kwargs):
+    radius = min(radius, (x2 - x1) / 2, (y2 - y1) / 2)
+    points = [
+        x1 + radius, y1, x2 - radius, y1, x2, y1, x2, y1 + radius,
+        x2, y2 - radius, x2, y2, x2 - radius, y2, x1 + radius, y2,
+        x1, y2, x1, y2 - radius, x1, y1 + radius, x1, y1,
+    ]
+    return canvas.create_polygon(points, smooth=True, splinesteps=24, **kwargs)
+
+
+class ModernButton(tk.Canvas):
+    def __init__(self, parent, text, command, *, accent="#7c5cff", outline=False, height=46):
+        self.parent_bg = parent.cget("bg")
+        super().__init__(parent, width=120, height=height, bg=self.parent_bg, bd=0, highlightthickness=0, cursor="hand2")
+        self.text = text
+        self.command = command
+        self.accent = accent
+        self.outline = outline
+        self.selected = False
+        self.hover = 0.0
+        self.target_hover = 0.0
+        self.bind("<Configure>", self._draw)
+        self.bind("<Enter>", lambda _event: self._animate_to(1.0))
+        self.bind("<Leave>", lambda _event: self._animate_to(0.0))
+        self.bind("<ButtonRelease-1>", self._click)
+
+    def _click(self, _event):
+        if self.command:
+            self.command()
+
+    def _animate_to(self, value: float):
+        self.target_hover = value
+        self._animate_step()
+
+    def _animate_step(self):
+        difference = self.target_hover - self.hover
+        self.hover = self.target_hover if abs(difference) < 0.04 else self.hover + difference * 0.28
+        self._draw()
+        if self.hover != self.target_hover:
+            self.after(16, self._animate_step)
+
+    def set_selected(self, selected: bool):
+        self.selected = selected
+        self._draw()
+
+    def _draw(self, _event=None):
+        width = max(self.winfo_width(), 20)
+        height = max(self.winfo_height(), 20)
+        self.delete("all")
+        if self.outline and not self.selected:
+            base, hover, ink = "#1a1e2e", "#292e45", "#d8d9e8"
+        else:
+            base, hover, ink = self.accent, "#967fff", "#ffffff"
+        fill = _mix_color(base, hover, self.hover)
+        _rounded_rectangle(self, 1, 1, width - 1, height - 1, 13, fill=fill, outline="")
+        if self.outline and not self.selected:
+            _rounded_rectangle(self, 1, 1, width - 1, height - 1, 13, fill="", outline="#30364f", width=1)
+        self.create_text(width / 2, height / 2, text=self.text, fill=ink, font=("Segoe UI", 10, "bold"))
+
+
+class AnimatedProgress(tk.Canvas):
+    def __init__(self, parent, variable: tk.DoubleVar):
+        super().__init__(parent, height=9, bg=parent.cget("bg"), bd=0, highlightthickness=0)
+        self.variable = variable
+        self.phase = 0
+        self.bind("<Configure>", self._draw)
+        self.variable.trace_add("write", lambda *_args: self._draw())
+        self.after(40, self._tick)
+
+    def _tick(self):
+        self.phase = (self.phase + 4) % 80
+        if 0 < self.variable.get() < 100:
+            self._draw()
+        try:
+            self.after(40, self._tick)
+        except tk.TclError:
+            pass
+
+    def _draw(self, _event=None):
+        if not self.winfo_exists():
+            return
+        width = max(self.winfo_width(), 4)
+        self.delete("all")
+        _rounded_rectangle(self, 0, 1, width, 8, 4, fill="#24283a", outline="")
+        fill_width = width * max(0, min(100, self.variable.get())) / 100
+        if fill_width > 3:
+            _rounded_rectangle(self, 0, 1, fill_width, 8, 4, fill="#7c5cff", outline="")
+            shine_x = min(fill_width - 2, self.phase / 80 * fill_width)
+            self.create_line(max(2, shine_x - 18), 4, shine_x, 4, fill="#52d9eb", width=3)
+
+
+class StatusOrb(tk.Canvas):
+    def __init__(self, parent):
+        super().__init__(parent, width=16, height=16, bg=parent.cget("bg"), bd=0, highlightthickness=0)
+        self.active = False
+        self.phase = 0
+        self.after(45, self._tick)
+
+    def set_active(self, active: bool):
+        self.active = active
+
+    def _tick(self):
+        self.phase = (self.phase + 1) % 40
+        self.delete("all")
+        if self.active:
+            wave = abs(20 - self.phase) / 20
+            radius = 5 + (1 - wave) * 2
+            self.create_oval(8 - radius, 8 - radius, 8 + radius, 8 + radius, fill="#7c5cff", outline="")
+            self.create_oval(5, 5, 11, 11, fill="#51d7e9", outline="")
+        else:
+            self.create_oval(5, 5, 11, 11, fill="#626b85", outline="")
+        try:
+            self.after(45, self._tick)
+        except tk.TclError:
+            pass
+
+
+class QRLANApp(LegacyQRLANApp):
+    BG = "#090b13"
+    CARD = "#121622"
+    CARD_ALT = "#171b2a"
+    INK = "#f5f3ff"
+    MUTED = "#929ab2"
+    ACCENT = "#7c5cff"
+    CYAN = "#51d7e9"
+    BORDER = "#252a3d"
+
+    def __init__(self):
+        tk.Tk.__init__(self)
+        self.title(APP_NAME)
+        self.geometry("920x720")
+        self.minsize(820, 660)
+        self.configure(bg=self.BG)
+        self.protocol("WM_DELETE_WINDOW", self.close)
+        self.service = TransferService(self.notify)
+        self.file_path: Path | None = None
+        self.last_received_path: Path | None = None
+        self.receive_folder = Path.home() / "Downloads" / "QRLAN Drop"
+        self.qr_photo = None
+        self.active_mode = "send"
+        try:
+            self.attributes("-alpha", 0.0)
+        except tk.TclError:
+            pass
+        self._build()
+        self.after(30, self._fade_in, 0.0)
+
+    def _fade_in(self, opacity=0.0):
+        try:
+            opacity = min(1.0, opacity + 0.09)
+            self.attributes("-alpha", opacity)
+            if opacity < 1.0:
+                self.after(18, self._fade_in, opacity)
+        except tk.TclError:
+            pass
+
+    def _card(self, parent, **kwargs):
+        border = tk.Frame(parent, bg=self.BORDER, bd=0)
+        inner = tk.Frame(border, bg=self.CARD, bd=0, **kwargs)
+        inner.pack(fill="both", expand=True, padx=1, pady=1)
+        return border, inner
+
+    def _build(self):
+        shell = tk.Frame(self, bg=self.BG)
+        shell.pack(fill="both", expand=True, padx=38, pady=28)
+
+        header = tk.Frame(shell, bg=self.BG, height=64)
+        header.pack(fill="x", pady=(0, 22))
+        header.pack_propagate(False)
+        mark = tk.Canvas(header, width=48, height=48, bg=self.BG, bd=0, highlightthickness=0)
+        mark.pack(side="left", pady=5)
+        _rounded_rectangle(mark, 2, 2, 46, 46, 14, fill=self.ACCENT, outline="")
+        mark.create_arc(12, 12, 36, 36, start=35, extent=270, style="arc", outline="white", width=3)
+        mark.create_oval(28, 12, 35, 19, fill=self.CYAN, outline="")
+
+        brand = tk.Frame(header, bg=self.BG)
+        brand.pack(side="left", padx=(13, 0), pady=4)
+        tk.Label(brand, text="QRLAN DROP", font=("Segoe UI", 18, "bold"), bg=self.BG, fg=self.INK).pack(anchor="w")
+        tk.Label(brand, text=f"Direct. Private. Effortless.  ·  v{APP_VERSION}", font=("Segoe UI", 9), bg=self.BG, fg=self.MUTED).pack(anchor="w", pady=(2, 0))
+        privacy = tk.Frame(header, bg="#151a27", padx=13, pady=8, highlightthickness=1, highlightbackground=self.BORDER)
+        privacy.pack(side="right", pady=11)
+        tk.Label(privacy, text="●", font=("Segoe UI", 8), bg="#151a27", fg=self.CYAN).pack(side="left")
+        tk.Label(privacy, text=" LOCAL NETWORK ONLY", font=("Segoe UI", 8, "bold"), bg="#151a27", fg="#c8ccda").pack(side="left")
+
+        body = tk.Frame(shell, bg=self.BG)
+        body.pack(fill="both", expand=True)
+        left_border, left = self._card(body, padx=28, pady=25)
+        left_border.pack(side="left", fill="both", expand=True)
+        right_border, right = self._card(body, width=320, padx=26, pady=24)
+        right_border.configure(width=322)
+        right_border.pack(side="left", fill="both", padx=(18, 0))
+        right_border.pack_propagate(False)
+        right.pack_propagate(False)
+
+        switch = tk.Frame(left, bg="#0d101a", padx=5, pady=5)
+        switch.pack(fill="x", pady=(0, 26))
+        self.send_tab = ModernButton(switch, "SEND", lambda: self._switch_mode("send"), outline=True, height=40)
+        self.send_tab.pack(side="left", fill="x", expand=True, padx=(0, 4))
+        self.receive_tab = ModernButton(switch, "RECEIVE", lambda: self._switch_mode("receive"), outline=True, height=40)
+        self.receive_tab.pack(side="left", fill="x", expand=True, padx=(4, 0))
+
+        self.content = tk.Frame(left, bg=self.CARD)
+        self.content.pack(fill="both", expand=True)
+        self.send_panel = tk.Frame(self.content, bg=self.CARD)
+        self.receive_panel = tk.Frame(self.content, bg=self.CARD)
+        self._build_send_panel()
+        self._build_receive_panel()
+        self._switch_mode("send", stop=False)
+        self._build_scanner(right)
+
+        footer = tk.Frame(shell, bg=self.BG)
+        footer.pack(fill="x", pady=(17, 0))
+        tk.Label(footer, text="FILES NEVER TOUCH THE CLOUD", font=("Segoe UI", 8, "bold"), bg=self.BG, fg="#687089").pack(side="left")
+        tk.Label(footer, text="∞  NO ARTIFICIAL FILE LIMIT", font=("Segoe UI", 8, "bold"), bg=self.BG, fg="#687089").pack(side="right")
+
+    def _build_send_panel(self):
+        panel = self.send_panel
+        self._eyebrow(panel, "01  FROM THIS COMPUTER")
+        self._label(panel, "Send something beautiful.", 22, "bold").pack(anchor="w", pady=(8, 5))
+        self._label(panel, "Choose any file. Your phone downloads it directly over Wi-Fi.", 10, color=self.MUTED, wrap=430).pack(anchor="w")
+        zone = tk.Frame(panel, bg=self.CARD_ALT, padx=18, pady=17, highlightthickness=1, highlightbackground="#30364c")
+        zone.pack(fill="x", pady=(24, 19))
+        icon = tk.Canvas(zone, width=44, height=44, bg=self.CARD_ALT, bd=0, highlightthickness=0)
+        icon.pack(side="left", padx=(0, 14))
+        icon.create_rectangle(10, 6, 34, 38, outline=self.CYAN, width=2)
+        icon.create_line(25, 6, 34, 15, fill=self.CYAN, width=2)
+        icon.create_line(25, 6, 25, 15, 34, 15, fill=self.CYAN, width=2)
+        details = tk.Frame(zone, bg=self.CARD_ALT)
+        details.pack(side="left", fill="x", expand=True)
+        self.send_name = tk.StringVar(value="No file selected")
+        self.send_size = tk.StringVar(value="Any file type · Any size")
+        self._label(details, self.send_name, 10, "bold", variable=True, bg=self.CARD_ALT, wrap=320).pack(anchor="w")
+        self._label(details, self.send_size, 9, variable=True, color=self.MUTED, bg=self.CARD_ALT).pack(anchor="w", pady=(4, 0))
+        self._button(panel, "Choose a file", self.choose_file, outline=True).pack(fill="x", pady=(0, 10))
+        self._button(panel, "Create download QR", self.start_send).pack(fill="x")
+
+    def _build_receive_panel(self):
+        panel = self.receive_panel
+        self._eyebrow(panel, "02  TO THIS COMPUTER")
+        self._label(panel, "Bring files home.", 22, "bold").pack(anchor="w", pady=(8, 5))
+        self._label(panel, "Scan once, choose a file on your phone, and watch it arrive.", 10, color=self.MUTED, wrap=430).pack(anchor="w")
+        zone = tk.Frame(panel, bg=self.CARD_ALT, padx=18, pady=17, highlightthickness=1, highlightbackground="#30364c")
+        zone.pack(fill="x", pady=(24, 19))
+        icon = tk.Canvas(zone, width=44, height=44, bg=self.CARD_ALT, bd=0, highlightthickness=0)
+        icon.pack(side="left", padx=(0, 14))
+        icon.create_rectangle(6, 12, 38, 36, outline=self.CYAN, width=2)
+        icon.create_line(8, 12, 20, 12, 24, 17, 38, 17, fill=self.CYAN, width=2)
+        details = tk.Frame(zone, bg=self.CARD_ALT)
+        details.pack(side="left", fill="x", expand=True)
+        self.folder_name = tk.StringVar(value=str(self.receive_folder))
+        self._label(details, "SAVE IN", 8, "bold", color=self.MUTED, bg=self.CARD_ALT).pack(anchor="w")
+        self._label(details, self.folder_name, 9, "bold", variable=True, bg=self.CARD_ALT, wrap=320).pack(anchor="w", pady=(4, 0))
+        self._button(panel, "Choose receive folder", self.choose_folder, outline=True).pack(fill="x", pady=(0, 10))
+        self._button(panel, "Create upload QR", self.start_receive).pack(fill="x")
+
+    def _build_scanner(self, right):
+        top = tk.Frame(right, bg=self.CARD)
+        top.pack(fill="x")
+        self._label(top, "SCAN PORTAL", 9, "bold", color=self.MUTED).pack(side="left")
+        tk.Label(top, text="READY", font=("Segoe UI", 8, "bold"), bg="#18272a", fg=self.CYAN, padx=8, pady=4).pack(side="right")
+        qr_border = tk.Frame(right, bg="#2d3348", width=250, height=250)
+        qr_border.pack(pady=(18, 17))
+        qr_border.pack_propagate(False)
+        qr_inner = tk.Frame(qr_border, bg="#0d1019")
+        qr_inner.pack(fill="both", expand=True, padx=1, pady=1)
+        self.qr_label = tk.Label(qr_inner, text="⌁\n\nYOUR QR CODE\nWILL APPEAR HERE", font=("Segoe UI", 9, "bold"), bg="#0d1019", fg="#646d87", justify="center")
+        self.qr_label.pack(fill="both", expand=True, padx=13, pady=13)
+        status_row = tk.Frame(right, bg=self.CARD)
+        status_row.pack(fill="x")
+        self.status_orb = StatusOrb(status_row)
+        self.status_orb.pack(side="left", padx=(0, 7))
+        self.status = tk.StringVar(value="Waiting for your move")
+        self._label(status_row, self.status, 9, "bold", variable=True, wrap=235).pack(side="left", fill="x", expand=True)
+        self.progress_value = tk.DoubleVar(value=0)
+        self.progress_bar = AnimatedProgress(right, self.progress_value)
+        self.progress_bar.pack(fill="x", pady=(13, 0))
+        self.progress_text = tk.StringVar(value="Select Send or Receive to begin")
+        self._label(right, self.progress_text, 8, variable=True, color=self.MUTED, wrap=260).pack(pady=(6, 0))
+        self.url_label = tk.Label(right, text="", font=("Segoe UI", 8), bg=self.CARD, fg=self.CYAN, cursor="hand2", wraplength=260)
+        self.url_label.pack(pady=(8, 0))
+        self.url_label.bind("<Button-1>", lambda _event: webbrowser.open(self.service.url) if self.service.url else None)
+        self.stop_button = self._button(right, "Stop transfer", self.stop_transfer, outline=True)
+        self.stop_button.pack(side="bottom", fill="x")
+        open_actions = tk.Frame(right, bg=self.CARD)
+        open_actions.pack(side="bottom", fill="x", pady=(0, 9))
+        self.open_folder_button = ModernButton(open_actions, "OPEN FOLDER", self.open_folder, accent=self.ACCENT, outline=True, height=40)
+        self.open_folder_button.pack(side="left", fill="x", expand=True, padx=(0, 4))
+        self.open_file_button = ModernButton(open_actions, "OPEN FILE", self.open_file, accent=self.ACCENT, outline=True, height=40)
+        self.open_file_button.pack(side="left", fill="x", expand=True, padx=(4, 0))
+
+    def _switch_mode(self, mode, stop=True):
+        if stop and mode != self.active_mode:
+            self.stop_transfer(switching=True)
+        self.active_mode = mode
+        self.send_tab.set_selected(mode == "send")
+        self.receive_tab.set_selected(mode == "receive")
+        self.send_panel.pack_forget()
+        self.receive_panel.pack_forget()
+        (self.send_panel if mode == "send" else self.receive_panel).pack(fill="both", expand=True)
+
+    def _eyebrow(self, parent, text):
+        tk.Label(parent, text=text, font=("Segoe UI", 8, "bold"), bg=self.CARD, fg=self.CYAN).pack(anchor="w")
+
+    def _label(self, parent, text, size, weight="normal", color=None, variable=False, wrap=0, bg=None):
+        args = {"font": ("Segoe UI", size, weight), "bg": bg or parent.cget("bg"), "fg": color or self.INK, "justify": "left"}
+        args["textvariable" if variable else "text"] = text
+        if wrap:
+            args["wraplength"] = wrap
+        return tk.Label(parent, **args)
+
+    def _button(self, parent, text, command, outline=False):
+        return ModernButton(parent, text, command, accent=self.ACCENT, outline=outline)
+
+    def _show_qr(self, url: str, status: str):
+        image = qrcode.make(url).convert("RGB")
+        image = image.resize((216, 216), Image.Resampling.NEAREST)
+        self.qr_photo = ImageTk.PhotoImage(image)
+        self.qr_label.configure(image=self.qr_photo, text="", bg="white")
+        self.status.set(status)
+        self.status_orb.set_active(True)
+        self.progress_value.set(0)
+        self.progress_text.set("Waiting for transfer to start")
+        self.url_label.configure(text=url)
+
+    def _update_progress(self, message: str, current: int | None, total: int | None):
+        self.status.set(message)
+        completed = message.startswith(("Received:", "Downloaded:"))
+        if message.startswith("Received: "):
+            candidate = self.receive_folder / message.removeprefix("Received: ")
+            if candidate.is_file():
+                self.last_received_path = candidate
+        self.status_orb.set_active(not completed and bool(self.service.url))
+        if total and current is not None:
+            percent = min(100, current * 100 / total)
+            self.progress_value.set(percent)
+            self.progress_text.set(f"{percent:.0f}% · {readable_size(current)} / {readable_size(total)}")
+        elif completed:
+            self.progress_value.set(100)
+            self.progress_text.set("Transfer complete")
+        else:
+            self.progress_value.set(0)
+            self.progress_text.set("")
+
+    def _current_file(self) -> Path | None:
+        if self.active_mode == "send" and self.file_path and self.file_path.is_file():
+            return self.file_path
+        if self.last_received_path and self.last_received_path.is_file():
+            return self.last_received_path
+        return None
+
+    def open_folder(self):
+        current = self._current_file()
+        folder = current.parent if current else self.receive_folder
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            if sys.platform == "win32":
+                os.startfile(str(folder))
+            else:
+                webbrowser.open(folder.as_uri())
+        except OSError as exc:
+            messagebox.showerror(APP_NAME, f"Cannot open that folder:\n{exc}")
+
+    def open_file(self):
+        current = self._current_file()
+        if current is None:
+            messagebox.showinfo(APP_NAME, "Choose a file or receive one first.")
+            return
+        try:
+            if sys.platform == "win32":
+                os.startfile(str(current))
+            else:
+                webbrowser.open(current.as_uri())
+        except OSError as exc:
+            messagebox.showerror(APP_NAME, f"Cannot open that file:\n{exc}")
+
+    def stop_transfer(self, switching=False):
+        self.service.stop()
+        self.qr_photo = None
+        self.qr_label.configure(image="", text="⌁\n\nYOUR QR CODE\nWILL APPEAR HERE", bg="#0d1019")
+        self.status.set("Waiting for your move" if switching else "Transfer stopped")
+        self.status_orb.set_active(False)
+        self.progress_value.set(0)
+        self.progress_text.set("Select Send or Receive to begin" if switching else "")
+        self.url_label.configure(text="")
+
+
+def _hide_windows_console():
+    """Keep source and packaged launches free of a companion console window."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        console = ctypes.windll.kernel32.GetConsoleWindow()
+        if console:
+            ctypes.windll.user32.ShowWindow(console, 0)
+    except Exception:
+        pass
+
+
+def _enable_dark_title_bar(window: tk.Tk):
+    """Ask Windows 11 to render Tk's native frame in dark mode."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        window.update_idletasks()
+        child = window.winfo_id()
+        hwnd = ctypes.windll.user32.GetParent(child) or child
+        enabled = ctypes.c_int(1)
+        # 20 is the current immersive-dark-mode attribute; 19 supports older builds.
+        for attribute in (20, 19):
+            result = ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hwnd, attribute, ctypes.byref(enabled), ctypes.sizeof(enabled)
+            )
+            if result == 0:
+                break
+        flags = 0x0001 | 0x0002 | 0x0004 | 0x0020
+        ctypes.windll.user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, flags)
+    except Exception:
+        pass
+
+
 def main():
+    _hide_windows_console()
     if sys.platform == "win32":
         try:
             import ctypes
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("QRLAN.Drop.1")
         except Exception:
             pass
-    QRLANApp().mainloop()
+    app = QRLANApp()
+    app.after(30, _enable_dark_title_bar, app)
+    app.after(350, _enable_dark_title_bar, app)
+    app.mainloop()
 
 
 if __name__ == "__main__":

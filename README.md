@@ -1,7 +1,8 @@
 # QRLAN Drop
 
-<img width="722" height="642" alt="clipboard" src="https://github.com/user-attachments/assets/a73c917f-af5b-42fb-bfe6-c2b1a6425f61" />
+**Current version: 1.5.0** · [Read the patch notes](CHANGELOG.md)
 
+<img width="722" height="642" alt="QRLAN Drop Windows app" src="https://github.com/user-attachments/assets/a73c917f-af5b-42fb-bfe6-c2b1a6425f61" />
 
 Send files between a Windows 11 computer and a phone by scanning a QR code.
 

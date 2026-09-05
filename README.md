@@ -6,6 +6,19 @@
 
 A dark Windows host app for sharing files directly with browsers on your local network. The receiving device needs no app or account.
 
+## Screenshots
+
+<table>
+  <tr>
+    <td><img src="screenshots/qrlan-v2-send-qr.png" alt="QRLAN Drop Send screen with an active QR code" /></td>
+    <td><img src="screenshots/qrlan-v2-send-link.png" alt="QRLAN Drop Show Link screen" /></td>
+  </tr>
+  <tr>
+    <td><img src="screenshots/qrlan-v2-receive.png" alt="QRLAN Drop Receive screen" /></td>
+    <td><img src="screenshots/qrlan-v2-history.png" alt="QRLAN Drop History screen with a completed transfer" /></td>
+  </tr>
+</table>
+
 ## Start the app
 
 Download [QRLAN.Drop.exe](https://github.com/Dhanendra-github/qrlan-drop/releases/download/v2.0.0/QRLAN.Drop.exe) and double-click it. No Python installation is needed. Both devices must be on the same local network; keep the host PC awake and the link active. If Windows Firewall asks, allow Private networks.

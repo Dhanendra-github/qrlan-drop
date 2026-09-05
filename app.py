@@ -1,6 +1,11 @@
 from __future__ import annotations
 
 import html
+import datetime
+import uuid
+import errno
+import queue
+import stat
 import os
 import secrets
 import socket
@@ -8,7 +13,7 @@ import sys
 import threading
 import urllib.parse
 import webbrowser
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -18,10 +23,11 @@ from tkinter import ttk
 
 import qrcode
 from PIL import Image, ImageTk
+from branding import BRAND_HTML, MARK_SVG
 
 
 APP_NAME = "QRLAN Drop"
-APP_VERSION = "1.5.0"
+APP_VERSION = "2.0.0"
 CHUNK_SIZE = 64 * 1024
 
 
@@ -68,17 +74,76 @@ class TransferSession:
     token: str
     file_path: Path | None = None
     receive_folder: Path | None = None
+    file_paths: tuple[Path, ...] = ()
+
+
+class TransferCancelled(Exception):
+    pass
 
 
 class TransferHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, address, session: TransferSession, notify):
+    def __init__(self, address, session: TransferSession, notify, on_record=None):
         self.session = session
         self.notify = notify
+        self.on_record = on_record
         self.upload_lock = threading.Lock()
+        self.cancelled = threading.Event()
+        self.connections = threading.Condition(threading.RLock())
+        self.active_connections = set()
         super().__init__(address, TransferHandler)
+
+    def process_request(self, request, client_address):
+        # Register before starting the worker, so stop cannot miss a new socket.
+        with self.connections:
+            if self.cancelled.is_set():
+                self.shutdown_request(request)
+                return
+            self.active_connections.add(request)
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            with self.connections:
+                self.active_connections.discard(request)
+                self.connections.notify_all()
+            self.shutdown_request(request)
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            with self.connections:
+                self.active_connections.discard(request)
+                self.connections.notify_all()
+
+    def cancel_active(self):
+        # Commit and cancellation use the same lock: no file can commit after stop.
+        with self.connections:
+            self.cancelled.set()
+            sockets = tuple(self.active_connections)
+        for connection in sockets:
+            try:
+                connection.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+    def wait_for_transfers(self, timeout=2.0):
+        with self.connections:
+            return self.connections.wait_for(lambda: not self.active_connections, timeout)
+
+    def check_cancelled(self):
+        if self.cancelled.is_set():
+            raise TransferCancelled()
+
+    def report(self, message, current=0, total=0, received_path=None):
+        if not self.cancelled.is_set():
+            if received_path is None:
+                self.notify(message, current, total)
+            else:
+                self.notify(message, current, total, received_path)
 
 
 class TransferHandler(BaseHTTPRequestHandler):
@@ -87,20 +152,65 @@ class TransferHandler(BaseHTTPRequestHandler):
     def log_message(self, _format, *_args):
         pass
 
+    def _history(self, status, direction=None, path=None, size=None):
+        if getattr(self, "_recorded", False) or self.server.on_record is None:
+            return
+        self._recorded = True
+        path = path or getattr(self, "_transfer_path", None)
+        self.server.on_record({
+            "id": uuid.uuid4().hex, "name": path.name if path else "Unknown file",
+            "path": str(path) if path and status == "Completed" else "",
+            "direction": direction or getattr(self, "_transfer_direction", "Received"),
+            "size": size if size is not None else getattr(self, "_transfer_size", 0),
+            "status": status, "date": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
+        })
+
     def _route(self) -> tuple[bool, str]:
         parts = urllib.parse.urlsplit(self.path).path.strip("/").split("/")
         valid = len(parts) >= 2 and parts[0] == "t" and secrets.compare_digest(parts[1], self.server.session.token)
         tail = parts[2] if len(parts) > 2 else ""
-        return valid, tail
+        return valid and not self.server.cancelled.is_set(), tail
+
+    def _send_body(self, body: bytes, content_type: str, status):
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+        except OSError:
+            # The peer may have disconnected before an error or success reply.
+            self.close_connection = True
 
     def _send_html(self, body: str, status=HTTPStatus.OK):
-        encoded = page(body).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(encoded)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(encoded)
+        self._send_body(page(body).encode("utf-8"), "text/html; charset=utf-8", status)
+
+    def _upload_error(self, message, status):
+        self._history("Failed")
+        self.server.report("Upload failed: " + message)
+        self._send_body(('{' + '"error": ' + json_string(message) + '}').encode("utf-8"),
+                        "application/json; charset=utf-8", status)
+
+    def _open_source(self, session):
+        source = None
+        try:
+            if session.file_path is None:
+                raise FileNotFoundError()
+            source = session.file_path.open("rb")
+            details = os.fstat(source.fileno())
+            if not stat.S_ISREG(details.st_mode):
+                raise OSError("Not a regular file")
+            return source, details.st_size
+        except OSError as exc:
+            if source is not None:
+                source.close()
+            message = "The file cannot be read. Ask the sender to choose it again."
+            status = HTTPStatus.FORBIDDEN if isinstance(exc, PermissionError) else HTTPStatus.GONE
+            self._history("Failed", "Sent", session.file_path)
+            self.server.report("Download unavailable: choose the source file again")
+            self._send_html("<h1>File unavailable</h1><p>" + message + "</p>", status)
+            return None
 
     def do_GET(self):
         valid, tail = self._route()
@@ -109,101 +219,166 @@ class TransferHandler(BaseHTTPRequestHandler):
             return
         session = self.server.session
         if session.mode == "send" and tail == "download":
+            if session.file_paths:
+                try:
+                    index = int(urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).get("file", ["0"])[0])
+                    if index < 0:
+                        raise IndexError()
+                    session = replace(session, file_path=session.file_paths[index])
+                except (ValueError, IndexError):
+                    self._send_html("<h1>File not found</h1>", HTTPStatus.NOT_FOUND)
+                    return
             self._download(session)
         elif session.mode == "send" and not tail:
-            file_path = session.file_path
-            assert file_path is not None
-            name = html.escape(file_path.name)
-            size = readable_size(file_path.stat().st_size)
-            self._send_html(f'<div class="badge">Ready to download</div><h1>{name}</h1><p>{size}</p><a class="button" href="download">Download file</a><p class="note">Keep the Windows app open until the download finishes.</p>')
+            if session.file_paths:
+                rows = []
+                for index, file in enumerate(session.file_paths):
+                    try:
+                        size = readable_size(file.stat().st_size)
+                        rows.append(f'<a class="file-link" href="/t/{session.token}/download?file={index}"><span>{html.escape(file.name)}</span><small>{size} · Download ↓</small></a>')
+                    except OSError:
+                        rows.append(f'<p>{html.escape(file.name)} · Unavailable</p>')
+                self._send_html('<div class="badge">QRLAN DROP</div><h1>Files from this PC</h1><p>Choose a file to download.</p>' + ''.join(rows) + '<p class="note">Keep the PC awake and the transfer link active.</p>')
+                return
+            opened = self._open_source(session)
+            if opened is None:
+                return
+            source, size = opened
+            source.close()
+            name = html.escape(session.file_path.name)
+            self._send_html(f'<div class="badge">Ready to download</div><h1>{name}</h1><p>{readable_size(size)}</p><a class="button" href="download">Download file</a><p class="note">Keep the Windows app open until the download finishes.</p>')
         elif session.mode == "receive" and not tail:
             self._send_html(upload_form(session.token))
         else:
             self._send_html("<h1>Link not found</h1>", HTTPStatus.NOT_FOUND)
 
     def _download(self, session: TransferSession):
-        file_path = session.file_path
-        if file_path is None or not file_path.is_file():
-            self._send_html("<h1>File unavailable</h1><p>The sender may have stopped the transfer.</p>", HTTPStatus.GONE)
+        opened = self._open_source(session)
+        if opened is None:
             return
-        size = file_path.stat().st_size
-        encoded_name = urllib.parse.quote(file_path.name)
-        self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", "application/octet-stream")
-        self.send_header("Content-Length", str(size))
-        self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{encoded_name}")
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
+        source, size = opened
+        self._transfer_path, self._transfer_size, self._transfer_direction = session.file_path, size, "Sent"
         sent = 0
         report_every = max(CHUNK_SIZE, size // 100) if size else CHUNK_SIZE
         last_report = 0
-        self.server.notify("Downloading…", 0, size)
         try:
-            with file_path.open("rb") as source:
-                while chunk := source.read(CHUNK_SIZE):
+            with source:
+                self.server.check_cancelled()
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Length", str(size))
+                self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{urllib.parse.quote(session.file_path.name)}")
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.server.report("Downloading…", 0, size)
+                while sent < size:
+                    self.server.check_cancelled()
+                    chunk = source.read(min(CHUNK_SIZE, size - sent))
+                    if not chunk:
+                        raise OSError("The source file changed during download")
                     self.wfile.write(chunk)
                     sent += len(chunk)
                     if sent - last_report >= report_every or sent == size:
-                        self.server.notify("Downloading…", sent, size)
+                        self.server.report("Downloading…", sent, size)
                         last_report = sent
-            self.server.notify(f"Downloaded: {file_path.name}", size, size)
-        except (BrokenPipeError, ConnectionResetError):
-            self.server.notify("Download was cancelled", 0, 0)
+                self.server.check_cancelled()
+            self._history("Completed")
+            self.server.report(f"Downloaded: {session.file_path.name}", size, size)
+        except TransferCancelled:
+            self._history("Cancelled")
+            self.close_connection = True
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            self._history("Cancelled")
+            self.server.report("Download was cancelled")
+            self.close_connection = True
+        except OSError:
+            self._history("Failed")
+            self.server.report("Download failed: the source file or connection became unavailable")
+            self.close_connection = True
 
     def do_POST(self):
         valid, tail = self._route()
         session = self.server.session
         if not valid or session.mode != "receive" or tail != "upload":
-            self.send_error(HTTPStatus.NOT_FOUND)
+            self._send_html("<h1>Link not found</h1>", HTTPStatus.NOT_FOUND)
             return
-        length_header = self.headers.get("Content-Length")
         try:
-            length = int(length_header) if length_header is not None else -1
+            length = int(self.headers.get("Content-Length", "-1"))
         except ValueError:
             length = -1
         if length < 0:
-            self.send_error(HTTPStatus.LENGTH_REQUIRED, "A valid file size is required")
+            self._upload_error("A valid file size is required", HTTPStatus.LENGTH_REQUIRED)
             return
         filename = safe_filename(self.headers.get("X-Filename", "received-file"))
-        folder = session.receive_folder
-        assert folder is not None
-        folder.mkdir(parents=True, exist_ok=True)
-        with self.server.upload_lock:
-            target = available_path(folder, filename)
-            temporary = target.with_name(f".{target.name}.{secrets.token_hex(4)}.part")
-            # Reserve the final name so simultaneous uploads cannot overwrite it.
-            target.touch(exist_ok=False)
-        remaining = length
-        received = 0
-        report_every = max(CHUNK_SIZE, length // 100) if length else CHUNK_SIZE
-        last_report = 0
-        self.server.notify("Receiving…", 0, length)
+        self._transfer_path = (session.receive_folder or Path(".")) / filename
+        self._transfer_size, self._transfer_direction = length, "Received"
+        target = temporary = None
+        reserved = temporary_created = committed = False
+        error = None
         try:
+            self.server.check_cancelled()
+            folder = session.receive_folder
+            if folder is None:
+                raise OSError("No receive folder is configured")
+            folder.mkdir(parents=True, exist_ok=True)
+            with self.server.upload_lock:
+                self.server.check_cancelled()
+                target = available_path(folder, filename)
+                temporary = target.with_name(f".{target.name}.{secrets.token_hex(4)}.part")
+                target.touch(exist_ok=False)
+                reserved = True
+            received = 0
+            report_every = max(CHUNK_SIZE, length // 100) if length else CHUNK_SIZE
+            last_report = 0
+            self.server.report("Receiving…", 0, length)
             with temporary.open("xb") as output:
-                while remaining:
-                    chunk = self.rfile.read(min(CHUNK_SIZE, remaining))
+                temporary_created = True
+                while received < length:
+                    self.server.check_cancelled()
+                    chunk = self.rfile.read(min(CHUNK_SIZE, length - received))
+                    self.server.check_cancelled()
                     if not chunk:
                         raise ConnectionError("Upload ended early")
                     output.write(chunk)
-                    remaining -= len(chunk)
                     received += len(chunk)
                     if received - last_report >= report_every or received == length:
-                        self.server.notify("Receiving…", received, length)
+                        self.server.report("Receiving…", received, length)
                         last_report = received
-            temporary.replace(target)
-        except Exception:
-            temporary.unlink(missing_ok=True)
-            target.unlink(missing_ok=True)
-            self.send_error(HTTPStatus.BAD_REQUEST, "Upload failed")
-            return
-        response = f'{{"name": {json_string(target.name)}}}'.encode("utf-8")
-        self.send_response(HTTPStatus.CREATED)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(response)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(response)
-        self.server.notify(f"Received: {target.name}", length, length)
+            with self.server.connections:
+                self.server.check_cancelled()
+                temporary.replace(target)
+                committed = True
+        except TransferCancelled:
+            self._history("Cancelled")
+            self.close_connection = True
+        except PermissionError:
+            error = ("Cannot write to the receive folder. Choose another folder and retry.", HTTPStatus.FORBIDDEN)
+        except ConnectionError:
+            error = ("The upload was interrupted. Please retry.", HTTPStatus.BAD_REQUEST)
+        except OSError as exc:
+            if exc.errno == errno.ENOSPC:
+                error = ("The receive drive is full. Free some space and retry.", HTTPStatus.INSUFFICIENT_STORAGE)
+            else:
+                error = ("Cannot save the file. Check the receive folder and available storage.", HTTPStatus.INTERNAL_SERVER_ERROR)
+        finally:
+            if not committed:
+                cleanup_failed = False
+                for owned, path in ((temporary_created, temporary), (reserved, target)):
+                    if owned:
+                        try:
+                            path.unlink(missing_ok=True)
+                        except OSError:
+                            cleanup_failed = True
+                if cleanup_failed:
+                    error = ("A partial file could not be removed; check the receive folder.", HTTPStatus.INTERNAL_SERVER_ERROR)
+        if error is not None:
+            self._upload_error(*error)
+        elif committed:
+            # Record the actual session destination, even if the user changed folders.
+            self._history("Completed", "Received", target, length)
+            self.server.report(f"Received: {target.name}", length, length, target)
+            response = ('{' + '"name": ' + json_string(target.name) + '}').encode("utf-8")
+            self._send_body(response, "application/json; charset=utf-8", HTTPStatus.CREATED)
 
 
 def json_string(value: str) -> str:
@@ -220,18 +395,20 @@ body {{ margin:0; min-height:100vh; display:grid; place-items:center; padding:24
 body::before {{ content:""; position:fixed; inset:-30%; z-index:-2; background:radial-gradient(circle at 28% 34%,#6d4aff42 0,transparent 28%),radial-gradient(circle at 78% 70%,#24c9e82b 0,transparent 25%); animation:drift 10s ease-in-out infinite alternate; }}
 body::after {{ content:""; position:fixed; inset:0; z-index:-1; opacity:.22; background-image:linear-gradient(#ffffff08 1px,transparent 1px),linear-gradient(90deg,#ffffff08 1px,transparent 1px); background-size:32px 32px; mask-image:linear-gradient(to bottom,black,transparent); }}
 main {{ position:relative; width:min(90vw,440px); overflow:hidden; padding:34px; border:1px solid #ffffff14; border-radius:28px; background:linear-gradient(145deg,#171a29ee,#10121dee); box-shadow:0 28px 90px #0009,inset 0 1px #ffffff0d; text-align:center; backdrop-filter:blur(24px); }}
-main::before {{ content:""; position:absolute; inset:0 0 auto; height:2px; background:linear-gradient(90deg,transparent,#8468ff,#39d9ed,transparent); }}
+main::before {{ content:""; position:absolute; inset:0 0 auto; height:2px; background:linear-gradient(90deg,transparent,#3487ff,#529aff,transparent); }}
+.brand {{ display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:24px;font-size:1rem;font-weight:650;letter-spacing:.02em;color:#eef3fb; }} .brand svg {{ width:28px;height:30px; }} .brand b {{ color:#3487ff;font-weight:500; }}
+.file-link {{ display:flex;flex-direction:column;gap:8px;padding:18px;margin:12px 0;border:1px solid #344256;border-radius:12px;text-align:left;color:#ecf3ff;text-decoration:none;overflow-wrap:anywhere; }} .file-link small {{ color:#a3bce0; }}
 h1 {{ font-size:1.5rem; line-height:1.25; overflow-wrap:anywhere; margin:16px 0 8px; }} p {{ color:#a5abc2; line-height:1.55; }}
-.button,button {{ display:block; width:100%; border:0; border-radius:14px; padding:15px; background:linear-gradient(110deg,#7558ff,#9978ff); color:white; font-weight:750; font-size:1rem; text-decoration:none; cursor:pointer; box-shadow:0 10px 30px #694cff36; transition:transform .2s,filter .2s; }}
+.button,button {{ display:block; width:100%; border:0; border-radius:14px; padding:15px; background:linear-gradient(110deg,#1766d8,#3487ff); color:white; font-weight:750; font-size:1rem; text-decoration:none; cursor:pointer; box-shadow:0 10px 30px #694cff36; transition:transform .2s,filter .2s; }}
 .button:hover,button:hover {{ transform:translateY(-2px); filter:brightness(1.12); }} button:disabled {{ opacity:.55; cursor:default; transform:none; }}
-.badge {{ display:inline-flex; padding:7px 12px; border:1px solid #8a72ff44; border-radius:99px; background:#7960ff18; color:#b9aaff; font-size:.78rem; font-weight:750; letter-spacing:.04em; }}
+.badge {{ display:inline-flex; padding:7px 12px; border:1px solid #8a72ff44; border-radius:99px; background:#7960ff18; color:#a5c8ff; font-size:.78rem; font-weight:750; letter-spacing:.04em; }}
 .picker {{ border:1px dashed #71669a; border-radius:17px; padding:25px 14px; margin:24px 0 15px; background:#ffffff05; transition:border-color .2s,background .2s; }} .picker:hover {{ border-color:#947cff; background:#8a6eff0c; }}
 input {{ max-width:100%; color:#cdd1e1; }} input::file-selector-button {{ margin-right:10px; border:0; border-radius:9px; padding:9px 12px; background:#292d42; color:#f5f3ff; cursor:pointer; }}
 progress {{ width:100%; height:10px; margin-top:18px; border:0; border-radius:99px; overflow:hidden; accent-color:#8064ff; }} progress::-webkit-progress-bar {{ background:#252839; }} progress::-webkit-progress-value {{ background:linear-gradient(90deg,#7659ff,#3dd9eb); }}
-.note {{ font-size:.82rem; }} #status {{ min-height:1.4em; font-weight:650; color:#baaaff; }}
+.note {{ font-size:.82rem; }} #status {{ min-height:1.4em; font-weight:650; color:#a5c8ff; }}
 @keyframes drift {{ to {{ transform:translate3d(5%,-3%,0) rotate(5deg); }} }}
 @media(prefers-reduced-motion:reduce) {{ * {{ animation:none!important; transition:none!important; }} }}
-</style></head><body><main>{body}</main></body></html>"""
+</style><link rel="icon" type="image/svg+xml" href="data:image/svg+xml,{urllib.parse.quote(MARK_SVG, safe='')}"></head><body><main>{BRAND_HTML}{body}</main></body></html>"""
 
 
 def upload_form(token: str) -> str:
@@ -245,36 +422,64 @@ button.onclick=()=>{{
  button.disabled=true; progress.value=0; status.textContent='Starting upload…';
  const xhr=new XMLHttpRequest(); xhr.open('POST','/t/{token}/upload'); xhr.setRequestHeader('Content-Type','application/octet-stream'); xhr.setRequestHeader('X-Filename',encodeURIComponent(file.name));
  xhr.upload.onprogress=e=>{{if(e.lengthComputable){{const pct=Math.round(e.loaded/e.total*100);progress.value=pct;status.textContent='Uploading… '+pct+'% · '+size(e.loaded)+' / '+size(e.total);}}}};
- xhr.onload=()=>{{button.disabled=false;if(xhr.status===201){{progress.value=100;const data=JSON.parse(xhr.responseText);status.textContent='Sent: '+data.name;}}else status.textContent='Upload failed.';}};
- xhr.onerror=()=>{{button.disabled=false;status.textContent='Upload failed. Check that the PC app is still running.';}};
+ xhr.onload=()=>{{button.disabled=false;let data={{}};try{{data=JSON.parse(xhr.responseText);}}catch{{}}if(xhr.status===201){{progress.value=100;status.textContent='Sent: '+(data.name||file.name);}}else{{progress.value=0;status.textContent=data.error||'Upload failed. Please retry.';}}}};
+ xhr.onerror=()=>{{button.disabled=false;progress.value=0;status.textContent='Upload failed. Check that the PC app is still running.';}};
  xhr.send(file);
 }};
 </script>"""
 
 
 class TransferService:
-    def __init__(self, notify):
+    def __init__(self, notify, on_record=None):
         self.notify = notify
         self.server: TransferHTTPServer | None = None
         self.thread: threading.Thread | None = None
         self.url = ""
+        self.generation = 0
+        self.events = queue.SimpleQueue()
+        self.records = queue.SimpleQueue()
+        self.on_record = on_record
 
     def start(self, session: TransferSession) -> str:
         self.stop()
-        self.server = TransferHTTPServer(("0.0.0.0", 0), session, self.notify)
+        generation = self.generation
+        def enqueue(message, current=0, total=0, received_path=None):
+            self.events.put((generation, message, current, total, received_path))
+        self.server = TransferHTTPServer(("0.0.0.0", 0), session, enqueue, self.records.put)
         port = self.server.server_address[1]
         self.url = f"http://{local_ipv4()}:{port}/t/{session.token}/"
         self.thread = threading.Thread(target=self.server.serve_forever, name="transfer-server", daemon=True)
         self.thread.start()
         return self.url
 
+    def poll(self):
+        while True:
+            try:
+                record = self.records.get_nowait()
+            except queue.Empty:
+                break
+            if self.on_record:
+                self.on_record(record)
+        # Called on Tk's main thread. Old sessions cannot overwrite current UI state.
+        while True:
+            try:
+                generation, message, current, total, received_path = self.events.get_nowait()
+            except queue.Empty:
+                break
+            if generation == self.generation:
+                self.notify(message, current, total, received_path)
+
     def stop(self):
-        if self.server:
-            self.server.shutdown()
-            self.server.server_close()
+        self.generation += 1
+        server = self.server
         self.server = None
         self.thread = None
         self.url = ""
+        if server:
+            server.cancel_active()
+            server.shutdown()
+            server.server_close()
+            server.wait_for_transfers()
 
 
 class LegacyQRLANApp(tk.Tk):
@@ -292,6 +497,7 @@ class LegacyQRLANApp(tk.Tk):
         self.configure(bg=self.BG)
         self.protocol("WM_DELETE_WINDOW", self.close)
         self.service = TransferService(self.notify)
+        self.after(50, self._poll_events)
         self.file_path: Path | None = None
         self.last_received_path: Path | None = None
         self.receive_folder = Path.home() / "Downloads" / "QRLAN Drop"
@@ -419,10 +625,14 @@ class LegacyQRLANApp(tk.Tk):
         self.progress_text.set("Waiting for transfer to start")
         self.url_label.configure(text=url)
 
-    def notify(self, message: str, current: int | None = None, total: int | None = None):
-        self.after(0, self._update_progress, message, current, total)
+    def _poll_events(self):
+        self.service.poll()
+        self.after(50, self._poll_events)
 
-    def _update_progress(self, message: str, current: int | None, total: int | None):
+    def notify(self, message: str, current: int | None = None, total: int | None = None, received_path: Path | None = None):
+        self._update_progress(message, current, total, received_path)
+
+    def _update_progress(self, message: str, current: int | None, total: int | None, received_path: Path | None = None):
         self.status.set(message)
         completed = message.startswith(("Received:", "Downloaded:"))
         if total and current is not None:
@@ -593,6 +803,7 @@ class QRLANApp(LegacyQRLANApp):
         self.configure(bg=self.BG)
         self.protocol("WM_DELETE_WINDOW", self.close)
         self.service = TransferService(self.notify)
+        self.after(50, self._poll_events)
         self.file_path: Path | None = None
         self.last_received_path: Path | None = None
         self.receive_folder = Path.home() / "Downloads" / "QRLAN Drop"
@@ -782,14 +993,13 @@ class QRLANApp(LegacyQRLANApp):
         self.progress_text.set("Waiting for transfer to start")
         self.url_label.configure(text=url)
 
-    def _update_progress(self, message: str, current: int | None, total: int | None):
+    def _update_progress(self, message: str, current: int | None, total: int | None, received_path: Path | None = None):
         self.status.set(message)
         completed = message.startswith(("Received:", "Downloaded:"))
-        if message.startswith("Received: "):
-            candidate = self.receive_folder / message.removeprefix("Received: ")
-            if candidate.is_file():
-                self.last_received_path = candidate
-        self.status_orb.set_active(not completed and bool(self.service.url))
+        if received_path is not None:
+            self.last_received_path = received_path
+        failed = message.startswith(("Upload failed:", "Download failed:", "Download unavailable:", "Download was cancelled"))
+        self.status_orb.set_active(not completed and not failed and bool(self.service.url))
         if total and current is not None:
             percent = min(100, current * 100 / total)
             self.progress_value.set(percent)
@@ -888,11 +1098,13 @@ def main():
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("QRLAN.Drop.1")
         except Exception:
             pass
-    app = QRLANApp()
+    from desktop import FluentApp
+    app = FluentApp()
     app.after(30, _enable_dark_title_bar, app)
     app.after(350, _enable_dark_title_bar, app)
     app.mainloop()
 
 
 if __name__ == "__main__":
+    sys.modules.setdefault("app", sys.modules[__name__])
     main()

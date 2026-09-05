@@ -1,88 +1,73 @@
 # QRLAN Drop
 
-**Current version: 1.5.0** · [Read the patch notes](CHANGELOG.md)
+**Version 2.0.0 — Fluent Commander**
 
-<img width="922" height="752" alt="QRLAN Drop v1.5 dark interface" src="https://github.com/user-attachments/assets/d2e6eedf-22b0-49cd-9ca9-596042ca03c9" />
+<img src="assets/brand-mark.svg" width="42" alt="QRLAN Drop mint logo" />
 
-Send files between a Windows 11 computer and a phone by scanning a QR code.
+A dark Windows host app for sharing files directly with browsers on your local network. The receiving device needs no app or account.
 
-No account. No cloud upload. Both devices only need to be on the same Wi-Fi.
+## Start the app
 
-## What is new in version 1.5
+Download [QRLAN.Drop.exe](https://github.com/Dhanendra-github/qrlan-drop/releases/download/v2.0.0/QRLAN.Drop.exe) and double-click it. No Python installation is needed. Both devices must be on the same local network; keep the host PC awake and the link active. If Windows Firewall asks, allow Private networks.
 
-- A modern dark design that matches Windows 11.
-- Smooth button, progress-bar, and status-light animations.
-- **Open Folder** opens the folder containing your file.
-- **Open File** opens the selected or newest received file.
-- No extra command window and no bright white title bar.
-- Choose your receive folder and watch progress for large files.
-- No artificial file-size limit.
+The [source ZIP](https://github.com/Dhanendra-github/qrlan-drop/releases/download/v2.0.0/QRLAN.Drop.Source.zip), [release notes](https://github.com/Dhanendra-github/qrlan-drop/releases/tag/v2.0.0), and [patch history](CHANGELOG.md) are also available. To run from source, use `run.ps1` with Python 3.11 or newer installed.
 
-## Easy download
+## Send files from this PC
 
-1. Open the [latest release](https://github.com/Dhanendra-github/qrlan-drop/releases/latest).
-2. Under **Assets**, download **QRLAN.Drop.exe**.
-3. Double-click the downloaded file.
-4. If Windows Firewall asks, allow **Private networks**.
+1. Open **Send** and choose files, choose a folder, or drag files/folders into the selection.
+2. Tick the files you want to share and click **Create transfer link**.
+3. Scan the displayed QR with the other device's camera, or use **Show Link**, **Copy Link**, or **Share Link**.
+4. Open the link in the other device's browser and choose a file to download.
 
-You do not need to install Python.
+Folders add their regular files recursively. Downloads are individual files; folder structure is not recreated and files are not zipped. Changing the selection only affects the next link. Creating a replacement link stops the old link and its active transfers.
 
-## Send a file from the computer
+## Receive files on this PC
 
-1. Open **QRLAN Drop**.
-2. Click **Send**.
-3. Click **Choose file**.
-4. Pick the file you want to send.
-5. Click **Create download QR**.
-6. Scan the QR code with your phone's camera.
-7. Tap **Download file** on the phone.
+1. Open **Receive** and choose the destination folder.
+2. Click **Create upload link**.
+3. Scan or share the link to the sending device.
+4. Choose a file in that device's browser and upload it. You can repeat this for more files.
 
-Keep the app open until the progress bar reaches 100%.
+Duplicate filenames receive a new name; existing files are not overwritten. Changing the folder preference affects new links. An active link retains its original destination.
 
-Use **Open Folder** to see where the file is saved. Use **Open File** to open it immediately.
+## QR and sharing controls
 
-## Send a file from the phone
+- **Show QR / Show Link:** switch between the QR and readable URL.
+- **Copy Link:** copy the current URL to the clipboard.
+- **Share Link:** copy the URL, open an email draft, or save the QR as an image. The app does not send messages automatically.
+- **Scan QR:** use a camera, import a QR image, or paste a local HTTP/HTTPS link. Review the destination before opening it.
+- **Stop transfer:** deactivate the link and cancel active transfers.
 
-1. Open **QRLAN Drop**.
-2. Click **Receive**.
-3. Click **Choose receive folder...** and pick where the file should be saved.
-4. Click **Create upload QR**.
-5. Scan the QR code with your phone's camera.
-6. Choose a file on the phone.
-7. Tap **Upload file**.
+Camera scanning requires an available camera and operating-system permission. QR image import works without a camera.
 
-Keep the app open until the progress bar reaches 100%.
+## History
 
-Use **Open Folder** to see the received file. Use **Open File** to open the newest received file.
+Completed, failed, and cancelled transfer records appear only after opening **History**. Filter by **All**, **Sent**, or **Received**. Select a completed transfer to use **Open File** or **Open Folder**. Opening is disabled if the file has moved or been deleted.
 
-## Important
+History and receive-folder preferences are stored on this PC under `%LOCALAPPDATA%\QRLAN Drop`. The main screens show pending selections and general progress, without a completed-file feed.
 
-- The computer and phone must be connected to the same Wi-Fi.
-- Some guest Wi-Fi networks block devices from talking to each other.
-- There is no artificial file-size limit. Free disk space and Wi-Fi stability are the practical limits.
-- Click **Stop transfer** when finished. This makes the QR link stop working.
-- Files stay on your local network. They are not uploaded to a cloud service.
-- The QR link only works while QRLAN Drop is open.
+## Large files and network behavior
 
-## Version 1.5 downloads
+- The app streams file data and imposes no artificial size cap, including for 1 TB files. Available disk space, browser/device limits, and connection stability still apply. A full 1 TB physical transfer has not been validated in this preview.
+- Interrupted transfers must be started again; resumable transfer is not implemented.
+- A completed send means the host finished sending the bytes. It cannot verify that the receiving browser saved them to disk.
+- Links work while the app runs, on reachable devices on the same network. Guest network isolation or a firewall can block connectivity.
+- Anyone with an active link and network access can use it. Links use local HTTP, without cloud storage or Internet tunneling.
 
-- [Download the Windows app](https://github.com/Dhanendra-github/qrlan-drop/releases/download/v1.5.0/QRLAN.Drop.exe)
-- [Download the source code](https://github.com/Dhanendra-github/qrlan-drop/releases/download/v1.5.0/QRLAN.Drop.Source.zip)
-- [Read all version 1.5 patch notes](CHANGELOG.md)
+## Build and test
 
-## Build it yourself
+Install Python 3.11 or newer and run `build.ps1`. The script creates a virtual environment if needed, installs the pinned requirements, and builds `dist\QRLAN Drop.exe` with the GUI and QR dependencies.
 
-1. Install Python 3.11 or newer from [python.org](https://www.python.org/downloads/windows/).
-2. Download this repository and unzip it.
-3. Right-click **build.ps1** and choose **Run with PowerShell**.
-4. Find the finished app at `dist\QRLAN Drop.exe`.
-
-Run the tests with:
+Run automated checks with:
 
 ```powershell
-python -m unittest -v
+.\.venv\Scripts\python.exe -B -m unittest -v
 ```
+
+Coverage includes streamed transfers, cancellation and cleanup, concurrent duplicate uploads, selected-file downloads, persistent history, URL validation, and QR image decoding.
+
+Keyboard shortcuts: **Ctrl+O** choose files, **Ctrl+H** History, **Ctrl+Enter** create a link. In the file list, **Space** toggles selected rows and **Delete** removes them from the selection.
 
 ## License
 
-MIT License. You may use, copy, change, and share the project. See [LICENSE](LICENSE).
+MIT License. See [LICENSE](LICENSE). Read version history in [CHANGELOG.md](CHANGELOG.md).
